@@ -1,0 +1,631 @@
+# ------------------------------------------------------------------------------------------
+# Impression du contenu du fichier de commandes à exécuter :
+# ------------------------------------------------------------------------------------------
+# Filtering warnings when importing pandas as numpy does (rgommers:silence-cython-warnings)
+import warnings
+warnings.filterwarnings("ignore", message="numpy.dtype size changed")
+warnings.filterwarnings("ignore", message="numpy.ufunc size changed")
+
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+WORKING_DIR='/media/Calculs/aster-calc-beam/' # Working directory
+INPUT_FILE='SectionAuto.output' # Filename of the input file
+fileInput =  WORKING_DIR + INPUT_FILE # Define input file
+data = pd.read_csv(fileInput) # Import input data
+
+DEBUT(PAR_LOT='NON');
+
+
+##     ##    ###    ########
+###   ###   ## ##      ##
+#### ####  ##   ##     ##
+## ### ## ##     ##    ##
+##     ## #########    ##
+##     ## ##     ##    ##
+##     ## ##     ##    ##
+acier=DEFI_MATERIAU(ELAS=_F(E=210000.0,
+                            NU=0.3,
+                            RHO=8000e-9,
+                            ),
+                   );
+
+##     ## ########  ######  ##     ##
+###   ### ##       ##    ## ##     ##
+#### #### ##       ##       ##     ##
+## ### ## ######    ######  #########
+##     ## ##             ## ##     ##
+##     ## ##       ##    ## ##     ##
+##     ## ########  ######  ##     ##
+mesh=LIRE_MAILLAGE(UNITE=20,
+                   INFO_MED=2,
+                   FORMAT='MED',
+                  );
+
+######## ##       ######## ##     ##
+##       ##       ##       ###   ###
+##       ##       ##       #### ####
+######   ##       ######   ## ### ##
+##       ##       ##       ##     ##
+##       ##       ##       ##     ##
+######## ######## ######## ##     ##
+model=AFFE_MODELE(MAILLAGE=mesh,
+                  AFFE=(_F(GROUP_MA='HEB360',
+                           PHENOMENE='MECANIQUE',
+                           MODELISATION='POU_D_T',
+                          ),
+                       ),
+                 );
+
+mate=AFFE_MATERIAU(MAILLAGE=mesh,
+                   AFFE=_F(GROUP_MA='HEB360',
+                           MATER=acier,
+                          ),
+                  );
+
+########  ########    ###    ##     ##
+##     ## ##         ## ##   ###   ###
+##     ## ##        ##   ##  #### ####
+########  ######   ##     ## ## ### ##
+##     ## ##       ######### ##     ##
+##     ## ##       ##     ## ##     ##
+########  ######## ##     ## ##     ##
+
+# Beam parameters
+beamList = ('HE360B','HE300B')
+beamCaraStr = ('A','IY','IZ','AY','AZ','EY','EZ','JX','JG','IYR2','IZR2','RY','RZ','RT')
+beamCara = {}
+for name in beamList:
+    beamData = data[data['NAME']==name][list(beamCaraStr)]
+    beamCara[name]=tuple(beamData.values[0])
+
+cara=AFFE_CARA_ELEM(MODELE=model,
+                    POUTRE=(_F(GROUP_MA='HEB360',
+                              SECTION='GENERALE',
+                              CARA=beamCaraStr,
+                              VALE=beamCara['HE360B'],
+                              ),
+                            ),
+                    ORIENTATION=_F(GROUP_MA='HEB360',
+                                   CARA='ANGL_VRIL',
+                                   VALE=90.0,
+                                  ),
+                    );
+
+
+char=AFFE_CHAR_MECA(MODELE=model,
+                    DDL_IMPO=(_F(GROUP_NO='Fixed',
+                                 DX=0.0,
+                                 DY=0.0,
+                                 DZ=0.0,
+                                 DRX=0.0,
+                                 DRY=0.0,
+                                 DRZ=0.0,
+                                 ),
+                              ),
+                    FORCE_NODALE=_F(GROUP_NO='Force',
+                                    FZ=-10000*9.81,
+                                   ),
+                    );
+
+ ######   #######  ##       ##     ## ########
+##    ## ##     ## ##       ##     ## ##
+##       ##     ## ##       ##     ## ##
+ ######  ##     ## ##       ##     ## ######
+      ## ##     ## ##        ##   ##  ##
+##    ## ##     ## ##         ## ##   ##
+ ######   #######  ########    ###    ########
+resu=MECA_STATIQUE(MODELE=model,
+                   CHAM_MATER=mate,
+                   CARA_ELEM=cara,
+                   EXCIT=_F(CHARGE=char,),);
+
+########   #######   ######  ########
+##     ## ##     ## ##    ##    ##
+##     ## ##     ## ##          ##
+########  ##     ##  ######     ##
+##        ##     ##       ##    ##
+##        ##     ## ##    ##    ##
+##         #######   ######     ##
+resu=CALC_CHAMP(reuse=resu,
+                RESULTAT=resu,
+                CONTRAINTE=(
+                  'SIEF_ELNO',
+                  'SIPO_ELNO',
+                  ),
+                FORCE=('REAC_NODA'),
+                );
+
+########   #######   ######  ########
+##     ## ##     ## ##    ##    ##
+##     ## ##     ## ##          ##
+########  ##     ##  ######     ##
+##        ##     ##       ##    ##
+##        ##     ## ##    ##    ##
+##         #######   ######     ##
+
+# Creation of result table for a group
+table=CREA_TABLE(RESU=_F(RESULTAT=resu,
+						 GROUP_MA='HEB360',
+						 NOM_CHAM='SIPO_ELNO',
+                         TOUT_CMP='OUI',
+						 ),
+                );
+# Extract ASTER table data
+mat = table.EXTR_TABLE();
+# Transform table data to pandas DataFrame
+res = pd.DataFrame(data=mat.values())
+# Append the group name
+res['GROUP']='HEB360'
+#
+DETRUIRE(CONCEPT=_F(NOM=table,),);
+# Find maxima of SMFY
+myMax = res[res['GROUP']=='HEB360']['SMFZ'].idxmax()
+StressMax = res.loc[myMax,['GROUP','NOEUD','COOR_X','COOR_Y','COOR_Z','SMFY','SMFZ','SMT','SN','SVY','SVZ']]
+# Plot SMFY on the beamCara
+X = np.array(res['COOR_X'])
+Y = np.array(res['SMFZ'])
+plt.plot(X,Y)
+plt.xlabel('Position on the beam (mm)')
+plt.ylabel('Stress due to MFZ (MPa)')
+plt.title('Plot of stress due to bending on HEB360')
+import ipdb
+ipdb.set_trace()
+plt.show()
+
+
+FIN();
+
+# ------------------------------------------------------------------------------------------
+
+  Ouverture en écriture du fichier ./vola.1
+                                                                                
+                                                                                
+              -- CODE_ASTER -- VERSION : EXPLOITATION (stable) --               
+                                                                                
+                     Version 12.6.0 modifiée le 16/06/2016                      
+                     révision 77d3379d51e8 - branche 'v12'                      
+                         Copyright EDF R&D 1991 - 2016                          
+                                                                                
+                    Exécution du : Wed Dec 28 13:11:57 2016                     
+                     Nom de la machine : camille-VirtualBox                     
+                              Architecture : 64bit                              
+                          Type de processeur : x86_64                           
+      Système d'exploitation : Linux Ubuntu 16.04 xenial 4.4.0-57-generic       
+                        Langue des messages : en (UTF-8)                        
+                                                                                
+                           Version de Python : 2.7.12                           
+                           Version de NumPy : 1.11.3                            
+                           Parallélisme MPI : inactif                           
+                          Parallélisme OpenMP : actif                           
+                        Nombre de processus utilisés : 1                        
+                     Version de la librairie HDF5 : 1.8.14                      
+                      Version de la librairie MED : 3.2.0                       
+                       Librairie MFront : non disponible                        
+                     Version de la librairie MUMPS : 4.10.0                     
+                        Librairie PETSc : non disponible                        
+                    Version de la librairie SCOTCH : 5.1.10                     
+
+                  Mémoire limite pour l'exécution : 4800.00 Mo                  
+                   consommée par l'initialisation : 304.71 Mo                   
+                  par les objets du jeu de commandes : 0.00 Mo                  
+                 reste pour l'allocation dynamique : 4361.95 Mo                 
+                Taille limite des fichiers d'échange : 12.00 Go                 
+                                                                                
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0001            Concept de type : -
+  # ------------------------------------------------------------------------------------------
+  DEBUT(PAR_LOT='NON',
+        INFO=1,
+        RESERVE_CPU=_F(BORNE=900,),
+        MEMOIRE=_F(TAILLE_BLOC=800.0,
+                   TAILLE_GROUP_ELEM=1000,),
+        MESURE_TEMPS=_F(MOYENNE='NON',
+                        NIVE_DETAIL=1,),
+        IMPR_MACRO='NON',)
+
+
+   
+   !------------------------------------------------------------------------------------!
+   ! <A> <SUPERVIS_1>                                                                   !
+   !                                                                                    !
+   !  L'utilisation du mot-clé PAR_LOT='NON' permet d'accéder en lecture et en écriture !
+   !  au contenu des concepts Aster. De ce fait, votre étude est exclue du périmètre    !
+   !  qualifié de Code_Aster puisque toutes ses étapes ne peuvent être certifiées.      !
+   !                                                                                    !
+   !  Conseils :                                                                        !
+   !    - Il n'y a pas particulièrement de risque de résultat faux... sauf si votre     !
+   !      programmation l'introduit.                                                    !
+   !    - Distinguez le calcul lui-même (qui doit sans doute passer en PAR_LOT='OUI')   !
+   !      des post-traitements (qui nécessiteraient le mode PAR_LOT='NON') qui peuvent  !
+   !      être réalisés en POURSUITE.                                                   !
+   !                                                                                    !
+   !                                                                                    !
+   ! Ceci est une alarme. Si vous ne comprenez pas le sens de cette                     !
+   ! alarme, vous pouvez obtenir des résultats inattendus !                             !
+   !------------------------------------------------------------------------------------!
+   
+
+  Valeur initiale du temps CPU maximum =   35996400 secondes
+  Valeur du temps CPU maximum passé aux commandes =   35995500 secondes
+  Réserve CPU prévue = 900 secondes
+
+  Ouverture en écriture du fichier ./glob.1
+
+  Ouverture en écriture du fichier ./vola.1
+
+  Ouverture en lecture du fichier /opt/aster/12.6/lib/aster/elem.1
+
+     Nom de la base                          :  ELEMBASE
+     Créée avec la version                   :  12.06.00
+     Nombre d'enregistrements utilisés       :  30
+     Nombre d'enregistrements maximum        :  512
+     Longueur d'enregistrement (octets)      :  819200
+     Nombre d'identificateurs utilisés       :  123
+     Taille maximum du répertoire            :  300
+     Pourcentage d'utilisation du répertoire :  41 %
+
+  Ouverture en lecture du fichier /opt/aster/12.6/lib/aster/elem.1
+
+
+     Nom de la base                          :  ELEMBASE
+     Nombre d'enregistrements utilisés       :  30
+     Nombre d'enregistrements maximum        :  512
+     Longueur d'enregistrement (octets)      :  819200
+     Nombre total d'accès en lecture         :  52
+     Volume des accès en lecture             :         40.62 Mo.
+     Nombre total d'accès en écriture        :  0
+     Volume des accès en écriture            :          0.00 Mo.
+     Nombre d'identificateurs utilisés       :  123
+     Taille maximum du répertoire            :  300
+     Pourcentage d'utilisation du répertoire :  41 %
+
+  Relecture des catalogues des éléments faite.
+
+  Fin de lecture (durée  0.010000  s.) 
+  # Mémoire (Mo) :   474.53 /   468.98 /    35.93 /    19.37 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0001   user+syst:        0.05s (syst:        0.04s, elaps:        0.11s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0002            Concept de type : mater_sdaster
+  # ------------------------------------------------------------------------------------------
+  acier = DEFI_MATERIAU(ELAS=_F(E=2.10000E5,
+                                RHO=8.E-06,
+                                NU=0.3,),
+                        INFO=1,)
+
+
+ MATERIAU : acier   
+ RELATION DE COMPORTEMENT: ELAS                            
+
+
+  # Mémoire (Mo) :   474.53 /   469.45 /    35.93 /    19.37 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0002   user+syst:        0.00s (syst:        0.00s, elaps:        0.01s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0003            Concept de type : maillage_sdaster
+  # ------------------------------------------------------------------------------------------
+  mesh = LIRE_MAILLAGE(UNITE=20,
+                       FORMAT='MED',
+                       INFO_MED=2,
+                       INFO=1,
+                       VERI_MAIL=_F(APLAT=1.E-3,
+                                    VERIF='OUI',),
+                       )
+
+
+  -> Lecture de la famille numéro   -6 de nom FAM_-6_Group_Of_All_Edges_HEB360.
+
+      Groupe numéro      1 : Group_Of_All_Edges
+
+      Groupe numéro      2 : HEB360
+
+  -> Lecture de la famille numéro   -1 de nom FAM_-1_Group_Of_All_Edges.
+
+      Groupe numéro      1 : Group_Of_All_Edges
+
+  -> Lecture de la famille numéro    2 de nom FAM_2_Fixed_Group_Of_All_Nodes_HEB360.
+
+      Groupe numéro      1 : Fixed
+
+      Groupe numéro      2 : Group_Of_All_Nodes
+
+      Groupe numéro      3 : HEB360
+
+  -> Lecture de la famille numéro    3 de nom FAM_3_Group_Of_All_Nodes_HEB360.
+
+      Groupe numéro      1 : Group_Of_All_Nodes
+
+      Groupe numéro      2 : HEB360
+
+  -> Lecture de la famille numéro    4 de nom FAM_4_Force_Group_Of_All_Nodes_HEB360.
+
+      Groupe numéro      1 : Force
+
+      Groupe numéro      2 : Group_Of_All_Nodes
+
+      Groupe numéro      3 : HEB360
+
+  -> Lecture de la famille numéro    1 de nom FAM_1_Group_Of_All_Nodes.
+
+      Groupe numéro      1 : Group_Of_All_Nodes
+  ====== VERIFICATION DU MAILLAGE ======
+
+
+------------ MAILLAGE mesh     - IMPRESSIONS NIVEAU  1 ------------
+
+ME-28-DECE-2016 13:11:57                                                        
+
+NOMBRE DE NOEUDS                         101
+
+NOMBRE DE MAILLES                        100
+                              SEG2                  100
+
+NOMBRE DE GROUPES DE NOEUDS                4
+                              Fixed                                1
+                              Group_Of_All_Nodes                 101
+                              HEB360                             101
+                              Force                                1
+
+NOMBRE DE GROUPES DE MAILLES               2
+                              Group_Of_All_Edges                 100
+                              HEB360                             100
+
+--------------------------------------------------------------------------------
+
+  # Mémoire (Mo) :   474.53 /   469.99 /    35.93 /    19.37 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0003   user+syst:        0.04s (syst:        0.00s, elaps:        0.09s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0004            Concept de type : modele_sdaster
+  # ------------------------------------------------------------------------------------------
+  model = AFFE_MODELE(MAILLAGE=mesh,
+                      AFFE=_F(GROUP_MA=('HEB360', ),
+                              PHENOMENE='MECANIQUE',
+                              MODELISATION=('POU_D_T', ),),
+                      INFO=1,
+                      VERI_JACOBIEN='OUI',
+                      PARTITION=_F(PARALLELISME='GROUP_ELEM',),
+                      )
+
+
+Sur les 100 mailles du maillage mesh, on a demandé l'affectation de 100, on a pu en affecter 100
+ Modélisation     Type maille  Élément fini     Nombre
+ POU_D_T          SEG2         MECA_POU_D_T     100
+#2      Calculs elementaires et assemblages               CPU (USER+SYST/SYST/ELAPS):      0.00      0.00      0.00
+  # Mémoire (Mo) :   474.53 /   470.89 /    35.93 /    28.26 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0004   user+syst:        0.02s (syst:        0.00s, elaps:        0.04s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0005            Concept de type : cham_mater
+  # ------------------------------------------------------------------------------------------
+  mate = AFFE_MATERIAU(MAILLAGE=mesh,
+                       AFFE=_F(MATER=(acier, ),
+                               GROUP_MA=('HEB360', ),),
+                       INFO=1,
+                       )
+
+  # Mémoire (Mo) :   474.53 /   470.89 /    35.93 /    28.26 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0005   user+syst:        0.01s (syst:        0.00s, elaps:        0.02s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0006            Concept de type : cara_elem
+  # ------------------------------------------------------------------------------------------
+  cara = AFFE_CARA_ELEM(MODELE=model,
+                        POUTRE=_F(SECTION='GENERALE',
+                                  GROUP_MA=('HEB360', ),
+                                  CARA=('A', 'IY', 'IZ', 'AY', 'AZ', 'EY', 'EZ', 'JX', 'JG', 'IYR2', 'IZR2', 'RY', 'RZ', 'RT'),
+                                  VALE=(1.8065632769E4, 1.0141245924103901E8, 4.31986038502435E8, 4.114547, 1.493601, 3.E-06, -3.7E-05, 2.957188774458E6, 2.82929658932576E12, 0.360643, 0.159002, 180.0, 150.0, 31.258798),
+                                  VARI_SECT='CONSTANT',),
+                        ORIENTATION=_F(GROUP_MA=('HEB360', ),
+                                       CARA='ANGL_VRIL',
+                                       VALE=90.0,),
+                        INFO=1,)
+
+
+     LE MODELE model    CONTIENT : 
+                                      100 ELEMENT(S) POUTRE
+#2      Calculs elementaires et assemblages               CPU (USER+SYST/SYST/ELAPS):      0.00      0.00      0.00
+  # Mémoire (Mo) :   474.53 /   471.94 /    35.93 /    28.26 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0006   user+syst:        0.03s (syst:        0.00s, elaps:        0.07s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0008            Concept de type : char_meca
+  # ------------------------------------------------------------------------------------------
+  char = AFFE_CHAR_MECA(MODELE=model,
+                        DDL_IMPO=_F(DRY=0.0,
+                                    DRX=0.0,
+                                    DRZ=0.0,
+                                    GROUP_NO=('Fixed', ),
+                                    DZ=0.0,
+                                    DX=0.0,
+                                    DY=0.0,),
+                        FORCE_NODALE=_F(GROUP_NO=('Force', ),
+                                        FZ=-9.8100E4,),
+                        INFO=1,
+                        VERI_NORM='OUI',)
+
+  # Mémoire (Mo) :   474.53 /   471.94 /    35.93 /    28.26 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0008   user+syst:        0.02s (syst:        0.01s, elaps:        0.03s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0009            Concept de type : evol_elas
+  # ------------------------------------------------------------------------------------------
+  resu = MECA_STATIQUE(CARA_ELEM=cara,
+                       MODELE=model,
+                       CHAM_MATER=mate,
+                       EXCIT=_F(CHARGE=char,
+                                TYPE_CHARGE='FIXE',),
+                       INFO=1,
+                       INST=0.0,
+                       OPTION='SIEF_ELGA',
+                       SOLVEUR=_F(RENUM='METIS',
+                                  STOP_SINGULIER='OUI',
+                                  ELIM_LAGR='NON',
+                                  NPREC=8,
+                                  METHODE='MULT_FRONT',),
+                       )
+
+
+Le système linéaire à résoudre a 618 degrés de liberté:
+   - 606 sont des degrés de liberté physiques
+     (ils sont portés par 101 noeuds du maillage)
+   - 12 sont les couples de paramètres de Lagrange associés
+     aux 6 relations linéaires dualisées.
+
+La matrice est de taille 618 équations.
+Elle contient 5811 termes non nuls si elle est symétrique et 11004 termes non nuls si elle n'est pas symétrique (le nombre de termes
+non nuls est susceptible de varier si l'on utilise le contact en formulation continue ou la méthode XFEM avec contact).
+Soit un taux de remplissage de   2.881 %.
+   CHAMP STOCKE :             DEPL INSTANT :  0.00000E+00  NUMERO D'ORDRE :     1
+#1      Resolution des systemes lineaires                 CPU (USER+SYST/SYST/ELAPS):      0.02      0.00      0.04
+#2      Calculs elementaires et assemblages               CPU (USER+SYST/SYST/ELAPS):      0.01      0.01      0.01
+  # Mémoire (Mo) :   474.53 /   472.45 /    35.93 /    28.41 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0009   user+syst:        0.05s (syst:        0.01s, elaps:        0.09s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0010            Concept de type : evol_elas
+  # ------------------------------------------------------------------------------------------
+  resu = CALC_CHAMP(reuse=resu,
+                    FORCE=('REAC_NODA', ),
+                    RESULTAT=resu,
+                    PRECISION=1.E-06,
+                    CONTRAINTE=('SIEF_ELNO', 'SIPO_ELNO'),
+                    INFO=1,
+                    CRITERE='RELATIF',)
+
+
+Le système linéaire à résoudre a 618 degrés de liberté:
+   - 606 sont des degrés de liberté physiques
+     (ils sont portés par 101 noeuds du maillage)
+   - 12 sont les couples de paramètres de Lagrange associés
+     aux 6 relations linéaires dualisées.
+#2      Calculs elementaires et assemblages               CPU (USER+SYST/SYST/ELAPS):      0.02      0.00      0.02
+  # Mémoire (Mo) :   474.53 /   472.45 /    35.93 /    28.55 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0010   user+syst:        0.03s (syst:        0.00s, elaps:        0.07s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0011            Concept de type : table_sdaster
+  # ------------------------------------------------------------------------------------------
+  table = CREA_TABLE(RESU=_F(GROUP_MA=('HEB360', ),
+                             TOUT_CMP='OUI',
+                             RESULTAT=resu,
+                             NOM_CHAM='SIPO_ELNO',
+                             PRECISION=1.E-06,
+                             CRITERE='RELATIF',),
+                     TYPE_TABLE='TABLE',)
+
+  # Mémoire (Mo) :   474.53 /   472.45 /    35.93 /    28.55 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0011   user+syst:        0.02s (syst:        0.00s, elaps:        0.06s)
+  # ------------------------------------------------------------------------------------------
+
+  # ------------------------------------------------------------------------------------------
+  # Commande No :  0012            Concept de type : -
+  # ------------------------------------------------------------------------------------------
+  DETRUIRE(CONCEPT=_F(NOM=(table, ),),
+           INFO=2,)
+
+
+ Destruction de  table              .TBBA
+
+ Destruction de  table              .TBNP
+
+ Destruction de  table              .TBLP
+
+ Destruction de  table              .0001
+
+ Destruction de  table            LG.0001
+
+ Destruction de  table              .0002
+
+ Destruction de  table            LG.0002
+
+ Destruction de  table              .0003
+
+ Destruction de  table            LG.0003
+
+ Destruction de  table              .0004
+
+ Destruction de  table            LG.0004
+
+ Destruction de  table              .0005
+
+ Destruction de  table            LG.0005
+
+ Destruction de  table              .0006
+
+ Destruction de  table            LG.0006
+
+ Destruction de  table              .0007
+
+ Destruction de  table            LG.0007
+
+ Destruction de  table              .0008
+
+ Destruction de  table            LG.0008
+
+ Destruction de  table              .0009
+
+ Destruction de  table            LG.0009
+
+ Destruction de  table              .0010
+
+ Destruction de  table            LG.0010
+
+ Destruction de  table              .0011
+
+ Destruction de  table            LG.0011
+
+ Destruction de  table              .0012
+
+ Destruction de  table            LG.0012
+
+ Destruction de  table              .0013
+
+ Destruction de  table            LG.0013
+
+ Destruction de  table              .0014
+
+ Destruction de  table            LG.0014
+
+ Destruction de  table              .0015
+
+ Destruction de  table            LG.0015
+
+ Destruction de  table              .TITR
+  # Mémoire (Mo) :   474.53 /   473.08 /    35.93 /    28.55 (VmPeak / VmSize / Optimum / Minimum)
+  # Fin commande No : 0012   user+syst:        0.02s (syst:        0.00s, elaps:        0.04s)
+  # ------------------------------------------------------------------------------------------
+> [0;32m/tmp/camille-camille-VirtualBox-interactif.11377/fort.1[0m(173)[0;36m<module>[0;34m()[0m
+[0;32m    172 [0;31m[0mipdb[0m[0;34m.[0m[0mset_trace[0m[0;34m([0m[0;34m)[0m[0;34m[0m[0m
+[0m[0;32m--> 173 [0;31m[0mplt[0m[0;34m.[0m[0mshow[0m[0;34m([0m[0;34m)[0m[0;34m[0m[0m
+[0m[0;32m    174 [0;31m[0;34m[0m[0m
+[0m
+ipdb>    
+   !-------------------------------------------------------!
+   ! <EXCEPTION> <DVP_2>                                   !
+   !                                                       !
+   ! Erreur numérique (floating point exception).          !
+   !                                                       !
+   !                                                       !
+   !                                                       !
+   ! Il y a probablement une erreur dans la programmation. !
+   ! Veuillez contacter votre assistance technique.        !
+   !-------------------------------------------------------!
+   
+Exception raised out of Code_Aster commands.
+EXECUTION_CODE_ASTER_EXIT_12863=8
+
+ <I>_EXIT_CODE = 8

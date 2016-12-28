@@ -1,0 +1,173 @@
+# Filtering warnings when importing pandas as numpy does (rgommers:silence-cython-warnings)
+import warnings
+warnings.filterwarnings("ignore", message="numpy.dtype size changed")
+warnings.filterwarnings("ignore", message="numpy.ufunc size changed")
+
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+WORKING_DIR='/media/Calculs/aster-calc-beam/' # Working directory
+INPUT_FILE='SectionAuto.output' # Filename of the input file
+fileInput =  WORKING_DIR + INPUT_FILE # Define input file
+data = pd.read_csv(fileInput) # Import input data
+
+DEBUT(PAR_LOT='NON');
+
+
+##     ##    ###    ########
+###   ###   ## ##      ##
+#### ####  ##   ##     ##
+## ### ## ##     ##    ##
+##     ## #########    ##
+##     ## ##     ##    ##
+##     ## ##     ##    ##
+acier=DEFI_MATERIAU(ELAS=_F(E=210000.0,
+                            NU=0.3,
+                            RHO=8000e-9,
+                            ),
+                   );
+
+##     ## ########  ######  ##     ##
+###   ### ##       ##    ## ##     ##
+#### #### ##       ##       ##     ##
+## ### ## ######    ######  #########
+##     ## ##             ## ##     ##
+##     ## ##       ##    ## ##     ##
+##     ## ########  ######  ##     ##
+mesh=LIRE_MAILLAGE(UNITE=20,
+                   INFO_MED=2,
+                   FORMAT='MED',
+                  );
+
+######## ##       ######## ##     ##
+##       ##       ##       ###   ###
+##       ##       ##       #### ####
+######   ##       ######   ## ### ##
+##       ##       ##       ##     ##
+##       ##       ##       ##     ##
+######## ######## ######## ##     ##
+model=AFFE_MODELE(MAILLAGE=mesh,
+                  AFFE=(_F(GROUP_MA='HEB360',
+                           PHENOMENE='MECANIQUE',
+                           MODELISATION='POU_D_T',
+                          ),
+                       ),
+                 );
+
+mate=AFFE_MATERIAU(MAILLAGE=mesh,
+                   AFFE=_F(GROUP_MA='HEB360',
+                           MATER=acier,
+                          ),
+                  );
+
+########  ########    ###    ##     ##
+##     ## ##         ## ##   ###   ###
+##     ## ##        ##   ##  #### ####
+########  ######   ##     ## ## ### ##
+##     ## ##       ######### ##     ##
+##     ## ##       ##     ## ##     ##
+########  ######## ##     ## ##     ##
+
+# Beam parameters
+beamList = ('HE360B','HE300B')
+beamCaraStr = ('A','IY','IZ','AY','AZ','EY','EZ','JX','JG','IYR2','IZR2','RY','RZ','RT')
+beamCara = {}
+for name in beamList:
+    beamData = data[data['NAME']==name][list(beamCaraStr)]
+    beamCara[name]=tuple(beamData.values[0])
+
+cara=AFFE_CARA_ELEM(MODELE=model,
+                    POUTRE=(_F(GROUP_MA='HEB360',
+                              SECTION='GENERALE',
+                              CARA=beamCaraStr,
+                              VALE=beamCara['HE360B'],
+                              ),
+                            ),
+                    ORIENTATION=_F(GROUP_MA='HEB360',
+                                   CARA='ANGL_VRIL',
+                                   VALE=90.0,
+                                  ),
+                    );
+
+
+char=AFFE_CHAR_MECA(MODELE=model,
+                    DDL_IMPO=(_F(GROUP_NO='Fixed',
+                                 DX=0.0,
+                                 DY=0.0,
+                                 DZ=0.0,
+                                 DRX=0.0,
+                                 DRY=0.0,
+                                 DRZ=0.0,
+                                 ),
+                              ),
+                    FORCE_NODALE=_F(GROUP_NO='Force',
+                                    FZ=-10000*9.81,
+                                   ),
+                    );
+
+ ######   #######  ##       ##     ## ########
+##    ## ##     ## ##       ##     ## ##
+##       ##     ## ##       ##     ## ##
+ ######  ##     ## ##       ##     ## ######
+      ## ##     ## ##        ##   ##  ##
+##    ## ##     ## ##         ## ##   ##
+ ######   #######  ########    ###    ########
+resu=MECA_STATIQUE(MODELE=model,
+                   CHAM_MATER=mate,
+                   CARA_ELEM=cara,
+                   EXCIT=_F(CHARGE=char,),);
+
+########   #######   ######  ########
+##     ## ##     ## ##    ##    ##
+##     ## ##     ## ##          ##
+########  ##     ##  ######     ##
+##        ##     ##       ##    ##
+##        ##     ## ##    ##    ##
+##         #######   ######     ##
+resu=CALC_CHAMP(reuse=resu,
+                RESULTAT=resu,
+                CONTRAINTE=(
+                  'SIEF_ELNO',
+                  'SIPO_ELNO',
+                  ),
+                FORCE=('REAC_NODA'),
+                );
+
+########   #######   ######  ########
+##     ## ##     ## ##    ##    ##
+##     ## ##     ## ##          ##
+########  ##     ##  ######     ##
+##        ##     ##       ##    ##
+##        ##     ## ##    ##    ##
+##         #######   ######     ##
+
+# Creation of result table for a group
+table=CREA_TABLE(RESU=_F(RESULTAT=resu,
+						 GROUP_MA='HEB360',
+						 NOM_CHAM='SIPO_ELNO',
+                         TOUT_CMP='OUI',
+						 ),
+                );
+# Extract ASTER table data
+mat = table.EXTR_TABLE();
+# Transform table data to pandas DataFrame
+res = pd.DataFrame(data=mat.values())
+# Append the group name
+res['GROUP']='HEB360'
+#
+DETRUIRE(CONCEPT=_F(NOM=table,),);
+# Find maxima of SMFY
+myMax = res[res['GROUP']=='HEB360']['SMFZ'].idxmax()
+StressMax = res.loc[myMax,['GROUP','NOEUD','COOR_X','COOR_Y','COOR_Z','SMFY','SMFZ','SMT','SN','SVY','SVZ']]
+# Plot SMFY on the beamCara
+X = np.array(res['COOR_X'])
+Y = np.array(res['SMFZ'])
+plt.plot(X,Y)
+plt.xlabel('Position on the beam (mm)')
+plt.ylabel('Stress due to MFZ (MPa)')
+plt.title('Plot of stress due to bending on HEB360')
+plt.show()
+
+FIN();
